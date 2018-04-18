@@ -1,7 +1,0 @@
-{
-  "standard.enable": true,
-  "cSpell.words": [
-    "fixup"
-  ],
-  "typescript.tsdk": "node_modules/typescript/lib"
-}
