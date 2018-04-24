@@ -1,7 +1,7 @@
 import { h, Component } from 'preact';
 // This isn't working.
 // https://github.com/GoogleChromeLabs/squoosh/issues/14
-//import * as style from './style.scss';
+import * as style from './style.scss';
 
 type Props = {
   img: ImageBitmap
