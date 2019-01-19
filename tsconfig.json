@@ -12,5 +12,9 @@
     "jsxFactory": "h",
     "allowJs": false,
     "baseUrl": "."
-  }
+  },
+  "exclude": [
+    "src/sw/**/*",
+    "src/codecs/processor-worker/**/*"
+  ]
 }

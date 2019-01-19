@@ -1,44 +1,56 @@
 const fs = require('fs');
 const path = require('path');
 const webpack = require('webpack');
-const CleanWebpackPlugin = require('clean-webpack-plugin');
-const UglifyJsPlugin = require('uglifyjs-webpack-plugin');
+const CleanPlugin = require('clean-webpack-plugin');
+const TerserPlugin = require('terser-webpack-plugin');
 const ProgressBarPlugin = require('progress-bar-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const OptimizeCssAssetsPlugin = require('optimize-css-assets-webpack-plugin');
 const HtmlPlugin = require('html-webpack-plugin');
-const PreloadPlugin = require('preload-webpack-plugin');
-const ReplacePlugin = require('webpack-plugin-replace');
+const ScriptExtHtmlPlugin = require('script-ext-html-webpack-plugin');
 const CopyPlugin = require('copy-webpack-plugin');
-const WorkboxPlugin = require('workbox-webpack-plugin');
-const CrittersPlugin = require('./config/critters-webpack-plugin');
 const WatchTimestampsPlugin = require('./config/watch-timestamps-plugin');
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+const WorkerPlugin = require('worker-plugin');
+const AutoSWPlugin = require('./config/auto-sw-plugin');
+const CrittersPlugin = require('critters-webpack-plugin');
+const AssetTemplatePlugin = require('./config/asset-template-plugin');
+const addCssTypes = require('./config/add-css-types');
 
-function readJson(filename) {
+function readJson (filename) {
   return JSON.parse(fs.readFileSync(filename));
 }
 
-module.exports = function(_, env) {
+const VERSION = readJson('./package.json').version;
+
+module.exports = async function (_, env) {
   const isProd = env.mode === 'production';
   const nodeModules = path.join(__dirname, 'node_modules');
   const componentStyleDirs = [
     path.join(__dirname, 'src/components'),
-    path.join(__dirname, 'src/routes')
+    path.join(__dirname, 'src/codecs'),
+    path.join(__dirname, 'src/custom-els'),
+    path.join(__dirname, 'src/lib'),
   ];
+
+  await addCssTypes(componentStyleDirs, { watch: !isProd });
 
   return {
     mode: isProd ? 'production' : 'development',
-    entry: './src/index',
+    entry: {
+      'first-interaction': './src/index'
+    },
     devtool: isProd ? 'source-map' : 'inline-source-map',
+    stats: 'minimal',
     output: {
       filename: isProd ? '[name].[chunkhash:5].js' : '[name].js',
-      chunkFilename: '[name].chunk.[chunkhash:5].js',
+      chunkFilename: '[name].[chunkhash:5].js',
       path: path.join(__dirname, 'build'),
-      publicPath: '/'
+      publicPath: '/',
+      globalObject: 'self'
     },
     resolve: {
-      extensions: ['.ts', '.tsx', '.js', '.jsx', '.scss', '.css'],
+      extensions: ['.ts', '.tsx', '.mjs', '.js', '.scss', '.css'],
       alias: {
         style: path.join(__dirname, 'src/style')
       }
@@ -50,7 +62,38 @@ module.exports = function(_, env) {
       }
     },
     module: {
+      // Disable the default JavaScript handling:
+      defaultRules: [],
       rules: [
+        {
+          oneOf: [
+            {
+              test: /(\.mjs|\.esm\.js)$/i,
+              type: 'javascript/esm',
+              resolve: {},
+              parser: {
+                harmony: true,
+                amd: false,
+                commonjs: false,
+                system: false,
+                requireInclude: false,
+                requireEnsure: false,
+                requireContext: false,
+                browserify: false,
+                requireJs: false,
+                node: false
+              }
+            },
+            {
+              type: 'javascript/auto',
+              resolve: {},
+              parser: {
+                system: false,
+                requireJs: false
+              }
+            }
+          ]
+        },
         {
           test: /\.(scss|sass)$/,
           loader: 'sass-loader',
@@ -63,18 +106,16 @@ module.exports = function(_, env) {
         },
         {
           test: /\.(scss|sass|css)$/,
-          // Only enable CSS Modules within `src/{components,routes}/*`
+          // Only enable CSS Modules within `src/components/*`
           include: componentStyleDirs,
           use: [
             // In production, CSS is extracted to files on disk. In development, it's inlined into JS:
             isProd ? MiniCssExtractPlugin.loader : 'style-loader',
             {
-              // This is a fork of css-loader that auto-generates .d.ts files for CSS module imports.
-              // The result is a definition file with the exported String classname mappings.
-              loader: 'typings-for-css-modules-loader',
+              loader: 'css-loader',
               options: {
                 modules: true,
-                localIdentName: '[local]__[hash:base64:5]',
+                localIdentName: isProd ? '[hash:base64:5]' : '[local]__[hash:base64:5]',
                 namedExport: true,
                 camelCase: true,
                 importLoaders: 1,
@@ -86,7 +127,7 @@ module.exports = function(_, env) {
         },
         {
           test: /\.(scss|sass|css)$/,
-          // Process non-modular CSS everywhere *except* `src/{components,routes}/*`
+          // Process non-modular CSS everywhere *except* `src/components/*`
           exclude: componentStyleDirs,
           use: [
             isProd ? MiniCssExtractPlugin.loader : 'style-loader',
@@ -105,14 +146,35 @@ module.exports = function(_, env) {
           loader: 'ts-loader'
         },
         {
-          test: /\.jsx?$/,
-          loader: 'babel-loader',
-          // Don't respect any Babel RC files found on the filesystem:
-          options: Object.assign(readJson('.babelrc'), { babelrc: false })
+          // All the codec files define a global with the same name as their file name. `exports-loader` attaches those to `module.exports`.
+          test: /\/codecs\/.*\.js$/,
+          loader: 'exports-loader'
+        },
+        {
+          test: /\/codecs\/.*\.wasm$/,
+          // This is needed to make webpack NOT process wasm files.
+          // See https://github.com/webpack/webpack/issues/6725
+          type: 'javascript/auto',
+          loader: 'file-loader',
+          options: {
+            name: '[name].[hash:5].[ext]',
+          },
+        },
+        {
+          test: /\.(png|svg|jpg|gif)$/,
+          loader: 'file-loader',
+          options: {
+            name: '[name].[hash:5].[ext]',
+          },
         }
       ]
     },
     plugins: [
+      new webpack.IgnorePlugin(
+        /(fs|crypto|path)/,
+        new RegExp(`${path.sep}codecs${path.sep}`)
+      ),
+
       // Pretty progressbar showing build progress:
       new ProgressBarPlugin({
         format: '\u001b[90m\u001b[44mBuild\u001b[49m\u001b[39m [:bar] \u001b[32m\u001b[1m:percent\u001b[22m\u001b[39m (:elapseds) \u001b[2m:msg\u001b[22m\r',
@@ -124,11 +186,14 @@ module.exports = function(_, env) {
       // Remove old files before outputting a production build:
       isProd && new CleanPlugin([
         'assets',
-        '**/*.{css,js,json,html}'
+        '**/*.{css,js,json,html,map}'
       ], {
         root: path.join(__dirname, 'build'),
+        verbose: false,
         beforeEmit: true
       }),
+
+      new WorkerPlugin(),
 
       // Automatically split code into async chunks.
       // See: https://medium.com/webpack/webpack-4-code-splitting-chunk-graph-and-the-splitchunks-optimization-be739a861366
@@ -140,13 +205,17 @@ module.exports = function(_, env) {
       // See: https://github.com/webpack-contrib/mini-css-extract-plugin
       // See also: https://twitter.com/wsokra/status/970253245733113856
       isProd && new MiniCssExtractPlugin({
-        chunkFilename: '[name].chunk.[contenthash:5].css'
+        filename: '[name].[contenthash:5].css',
+        chunkFilename: '[name].[contenthash:5].css'
       }),
 
       new OptimizeCssAssetsPlugin({
         cssProcessorOptions: {
-          zindex: false,
-          discardComments: { removeAll: true }
+          postcssReduceIdents: {
+            counterStyle: false,
+            gridTemplate: false,
+            keyframes: false
+          }
         }
       }),
 
@@ -160,54 +229,43 @@ module.exports = function(_, env) {
       ]),
 
       // For now we're not doing SSR.
-      new HtmlWebpackPlugin({
+      new HtmlPlugin({
         filename: path.join(__dirname, 'build/index.html'),
-        template: '!!ejs-loader!src/index.html',
-        // template: '!!'+path.join(__dirname, 'config/prerender-loader')+'!src/index.html',
+        template: isProd ? '!!prerender-loader?string!src/index.html' : 'src/index.html',
         minify: isProd && {
           collapseWhitespace: true,
           removeScriptTypeAttributes: true,
-          removeRedundantAttributes: true,
           removeStyleLinkTypeAttributes: true,
+          removeRedundantAttributes: true,
           removeComments: true
         },
         manifest: readJson('./src/manifest.json'),
-        inject: true,
+        inject: 'body',
         compile: true
       }),
 
-      // Inject <link rel="preload"> for resources
-      isProd && new PreloadWebpackPlugin(),
+      new AutoSWPlugin({ version: VERSION }),
 
-      isProd && new CrittersPlugin({
-        // Don't inline fonts into critical CSS, but do preload them:
-        preloadFonts: true,
-        // convert critical'd <link rel="stylesheet"> to <link rel="preload" as="style">:
-        async: true,
-        // Use media hack to load async (<link media="only x" onload="this.media='all'">):
-        media: true
-        // // use a $loadcss async CSS loading shim (DOM insertion to head)
-        // preload: 'js'
-        // // copy original <link rel="stylesheet"> to the end of <body>:
-        // preload: true
+      isProd && new AssetTemplatePlugin({
+        template: path.join(__dirname, '_headers.ejs'),
+        filename: '_headers',
+      }),
+
+      isProd && new AssetTemplatePlugin({
+        template: path.join(__dirname, '_redirects.ejs'),
+        filename: '_redirects',
+      }),
+
+      new ScriptExtHtmlPlugin({
+        inline: ['first']
       }),
 
       // Inline constants during build, so they can be folded by UglifyJS.
       new webpack.DefinePlugin({
+        VERSION: JSON.stringify(VERSION),
         // We set node.process=false later in this config.
         // Here we make sure if (process && process.foo) still works:
         process: '{}'
-      }),
-
-      // Babel embeds helpful error messages into transpiled classes that we don't need in production.
-      // Here we replace the constructor and message with a static throw, leaving the message to be DCE'd.
-      // This is useful since it shows the message in SourceMapped code when debugging.
-      isProd && new ReplacePlugin({
-        include: /babel-helper$/,
-        patterns: [{
-          regex: /throw\s+(?:new\s+)?((?:Type|Reference)?Error)\s*\(/g,
-          value: (s, type) => `throw 'babel error'; (`
-        }]
       }),
 
       // Copying files via Webpack allows them to be served dynamically by `webpack serve`
@@ -223,25 +281,29 @@ module.exports = function(_, env) {
         openAnalyzer: false
       }),
 
-      // Generate a ServiceWorker using Workbox.
-      isProd && new WorkboxPlugin.GenerateSW({
-        swDest: 'sw.js',
-        clientsClaim: true,
-        skipWaiting: true,
-        // allow for offline client-side routing:
-        navigateFallback: '/',
-        navigateFallbackBlacklist: [/\.[a-z0-9]+$/i]
+      // Inline Critical CSS (for the intro screen, essentially)
+      isProd && new CrittersPlugin({
+        // use <link rel="stylesheet" media="not x" onload="this.media='all'"> hack to load async css:
+        preload: 'media',
+        // inline all styles from any stylesheet below this size:
+        inlineThreshold: 2000,
+        // don't bother lazy-loading non-critical stylesheets below this size, just inline the non-critical styles too:
+        minimumExternalSize: 4000,
+        // don't emit <noscript> external stylesheet links since the app fundamentally requires JS anyway:
+        noscriptFallback: false,
+        // inline the tiny data URL fonts we have for the intro screen:
+        inlineFonts: true,
+        // (and don't lazy load them):
+        preloadFonts: false
       })
     ].filter(Boolean), // Filter out any falsey plugin array entries.
 
     optimization: {
       minimizer: [
-        new UglifyJsPlugin({
+        new TerserPlugin({
           sourceMap: isProd,
-          extractComments: {
-            file: 'build/licenses.txt'
-          },
-          uglifyOptions: {
+          extractComments: 'build/licenses.txt',
+          terserOptions: {
             compress: {
               inline: 1
             },
@@ -280,8 +342,6 @@ module.exports = function(_, env) {
       compress: true,
       // Request paths not ending in a file extension serve index.html:
       historyApiFallback: true,
-      // Don't output server address info to console on startup:
-      noInfo: true,
       // Suppress forwarding of Webpack logs to the browser console:
       clientLogLevel: 'none',
       // Supress the extensive stats normally printed after a dev build (since sizes are mostly useless):

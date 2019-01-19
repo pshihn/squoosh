@@ -3,14 +3,14 @@
   "short_name": "Squoosh",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#fff",
-  "theme_color": "#673ab8",
+  "theme_color": "#f78f21",
   "icons": [
     {
-      "src": "/assets/icon.png",
+      "src": "/assets/icon-large.png",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "1024x1024"
     }
   ]
 }
